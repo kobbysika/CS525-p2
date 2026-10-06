@@ -1,34 +1,14 @@
-#include <stdlib.h>
-#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
 #include "harness/unity.h"
 #include "../src/lab.h"
-
-
-void setUp(void) {
-  printf("Setting up tests...\n");
-}
-
-void tearDown(void) {
-  printf("Tearing down tests...\n");
-}
-
-void test_get_greeting(void) {
-  char *greeting = get_greeting("Alice");
-  TEST_ASSERT_NOT_NULL(greeting);
-  TEST_ASSERT_EQUAL_STRING("Hello, Alice!", greeting);
-  free(greeting); // Free the allocated memory for the greeting
-
-  greeting = get_greeting(NULL);
-  TEST_ASSERT_NULL(greeting);
-
-  greeting = get_greeting("");
-  TEST_ASSERT_NOT_NULL(greeting);
-  TEST_ASSERT_EQUAL_STRING("Hello, !", greeting);
-  free(greeting);
-}
-
-int main(void) {
-  UNITY_BEGIN();
-  RUN_TEST(test_get_greeting);
-  return UNITY_END();
-}
+void setUp(void){}
+void tearDown(void){}
+static void codec(void){uint8_t ex[]={0,1,0xf2,3,0xf4,0xf5,0xf6,0xf7},w[GBN_PACKET_MAX];struct packet p={0},q;size_t n;TEST_ASSERT_EQUAL_HEX16(0x220d,internet_checksum(ex,sizeof(ex)));p.type=PACKET_DATA;p.seq=2;p.length=3;memcpy(p.payload,"Hi!",3);n=packet_encode(&p,w,sizeof(w));TEST_ASSERT_EQUAL_UINT(13,n);TEST_ASSERT_EQUAL_HEX8(0x96,w[2]);TEST_ASSERT_EQUAL_HEX8(0x91,w[3]);TEST_ASSERT_TRUE(packet_decode(w,n,&q));TEST_ASSERT_EQUAL_UINT32(2,q.seq);TEST_ASSERT_EQUAL_UINT(3,q.length);TEST_ASSERT_EQUAL_MEMORY("Hi!",q.payload,3);w[12]^=1;TEST_ASSERT_FALSE(packet_decode(w,n,&q));}
+static void invalid_packets(void){uint8_t w[GBN_PACKET_MAX]={0},carry[]={0xff,0xff,0xff};struct packet p={0},q;p.type=PACKET_ACK;p.seq=3;TEST_ASSERT_NOT_EQUAL(0,internet_checksum(carry,sizeof(carry)));TEST_ASSERT_EQUAL_UINT(10,packet_encode(&p,w,sizeof(w)));TEST_ASSERT_FALSE(packet_decode(w,9,&q));TEST_ASSERT_FALSE(packet_decode(w,10,NULL));w[8]=0;w[9]=1;TEST_ASSERT_FALSE(packet_decode(w,10,&q));w[8]=4;w[9]=1;TEST_ASSERT_FALSE(packet_decode(w,10,&q));p.type=PACKET_DATA;p.length=0;packet_encode(&p,w,sizeof(w));w[0]=9;w[2]=w[3]=0;w[2]=(uint8_t)(internet_checksum(w,10)>>8);w[3]=(uint8_t)internet_checksum(w,10);TEST_ASSERT_FALSE(packet_decode(w,10,&q));packet_encode(&p,w,sizeof(w));w[1]=1;w[2]=w[3]=0;w[2]=(uint8_t)(internet_checksum(w,10)>>8);w[3]=(uint8_t)internet_checksum(w,10);TEST_ASSERT_FALSE(packet_decode(w,10,&q));p.type=PACKET_ACK;p.length=0;packet_encode(&p,w,sizeof(w));w[8]=0;w[9]=1;w[2]=w[3]=0;w[10]=0;w[2]=(uint8_t)(internet_checksum(w,11)>>8);w[3]=(uint8_t)internet_checksum(w,11);TEST_ASSERT_FALSE(packet_decode(w,11,&q));TEST_ASSERT_EQUAL_UINT(0,packet_encode(NULL,w,sizeof(w)));TEST_ASSERT_EQUAL_UINT(0,packet_encode(&p,NULL,sizeof(w)));TEST_ASSERT_EQUAL_UINT(0,packet_encode(&p,w,2));p.type=9;TEST_ASSERT_EQUAL_UINT(0,packet_encode(&p,w,sizeof(w)));p.type=PACKET_DATA;p.length=1025;TEST_ASSERT_EQUAL_UINT(0,packet_encode(&p,w,sizeof(w)));p.type=PACKET_ACK;p.length=1;TEST_ASSERT_EQUAL_UINT(0,packet_encode(&p,w,sizeof(w)));TEST_ASSERT_FALSE(packet_decode(NULL,0,&q));}
+static void receiver_cases(void){struct receiver r;struct packet p={0},ack;uint8_t out[1024];size_t n;receiver_init(&r);p.type=PACKET_DATA;p.seq=0;p.length=2;TEST_ASSERT_FALSE(receiver_packet(&r,&p,out,1,&n,&ack));p.seq=1;p.length=1;p.payload[0]='x';TEST_ASSERT_TRUE(receiver_packet(&r,&p,out,sizeof(out),&n,&ack));TEST_ASSERT_EQUAL_UINT(0,n);TEST_ASSERT_EQUAL_UINT32(0,ack.seq);p.seq=0;TEST_ASSERT_TRUE(receiver_packet(&r,&p,out,sizeof(out),&n,&ack));TEST_ASSERT_EQUAL_UINT(1,n);TEST_ASSERT_EQUAL_UINT8('x',out[0]);TEST_ASSERT_TRUE(receiver_packet(&r,&p,out,sizeof(out),&n,&ack));TEST_ASSERT_EQUAL_UINT32(1,ack.seq);p.type=PACKET_FIN;p.seq=1;p.length=0;TEST_ASSERT_TRUE(receiver_packet(&r,&p,out,sizeof(out),&n,&ack));TEST_ASSERT_TRUE(r.finished);TEST_ASSERT_EQUAL_UINT32(2,ack.seq);TEST_ASSERT_TRUE(receiver_packet(&r,&p,out,sizeof(out),&n,&ack));p.type=PACKET_ACK;TEST_ASSERT_FALSE(receiver_packet(&r,&p,out,sizeof(out),&n,&ack));}
+static void sender_cases(void){uint8_t d[2048]={1};struct sender s;struct packet p,re[64];size_t n;sender_init(&s,d,sizeof(d),2,100);TEST_ASSERT_FALSE(sender_done(&s));TEST_ASSERT_TRUE(sender_next_packet(&s,10,&p));TEST_ASSERT_EQUAL_UINT(1024,p.length);TEST_ASSERT_TRUE(sender_next_packet(&s,10,&p));TEST_ASSERT_FALSE(sender_next_packet(&s,10,&p));TEST_ASSERT_EQUAL_UINT64(110,sender_deadline(&s));sender_ack(&s,0,20);sender_ack(&s,99,20);TEST_ASSERT_EQUAL_UINT32(0,s.base);sender_ack(&s,2,20);TEST_ASSERT_EQUAL_UINT32(2,s.base);TEST_ASSERT_TRUE(sender_next_packet(&s,20,&p));TEST_ASSERT_EQUAL_UINT(PACKET_FIN,p.type);TEST_ASSERT_EQUAL_UINT(0,sender_timeout(&s,119,re,64));n=sender_timeout(&s,120,re,64);TEST_ASSERT_EQUAL_UINT(1,n);TEST_ASSERT_EQUAL_UINT(PACKET_FIN,re[0].type);sender_ack(&s,3,130);TEST_ASSERT_TRUE(sender_done(&s));TEST_ASSERT_EQUAL_UINT64(UINT64_MAX,sender_deadline(&s));}
+static void timeout_giveup(void){uint8_t d[3]={1,2,3};struct sender s;struct packet p,re[64];int i;sender_init(&s,d,3,1,10);TEST_ASSERT_TRUE(sender_next_packet(&s,0,&p));for(i=1;i<=9;i++)TEST_ASSERT_EQUAL_UINT(1,sender_timeout(&s,(uint64_t)i*10,re,64));TEST_ASSERT_EQUAL_UINT(0,sender_timeout(&s,100,re,64));TEST_ASSERT_TRUE(s.failed);TEST_ASSERT_FALSE(sender_done(&s));TEST_ASSERT_FALSE(sender_next_packet(&s,101,&p));s.timer_running=true;TEST_ASSERT_EQUAL_UINT(0,sender_timeout(&s,200,re,64));}
+static void sizes(void){uint8_t d[2048]={0};struct sender s;struct packet p;sender_init(&s,NULL,0,1,10);TEST_ASSERT_TRUE(sender_next_packet(&s,0,&p));TEST_ASSERT_EQUAL_UINT(PACKET_FIN,p.type);sender_init(&s,d,sizeof(d),4,10);TEST_ASSERT_TRUE(sender_next_packet(&s,0,&p));TEST_ASSERT_EQUAL_UINT(1024,p.length);TEST_ASSERT_TRUE(sender_next_packet(&s,0,&p));TEST_ASSERT_EQUAL_UINT(1024,p.length);TEST_ASSERT_FALSE(sender_next_packet(&s,0,&p));sender_ack(&s,2,1);TEST_ASSERT_TRUE(sender_next_packet(&s,1,&p));TEST_ASSERT_EQUAL_UINT(PACKET_FIN,p.type);}
+static void end_to_end(void){uint8_t input[2500],output[2500],delivery[1024],wire[GBN_PACKET_MAX];size_t used=0,n,dn;uint32_t seed=7;uint64_t now=0;struct sender s;struct receiver r;struct packet p,q,ack,re[64];for(n=0;n<sizeof(input);n++)input[n]=(uint8_t)n;sender_init(&s,input,sizeof(input),4,5);receiver_init(&r);while(!sender_done(&s)){while(sender_next_packet(&s,now,&p)){seed=seed*1103515245u+12345u;if(seed%5==0)continue;n=packet_encode(&p,wire,sizeof(wire));if(seed%5==1)wire[n-1]^=1;if(packet_decode(wire,n,&q)&&receiver_packet(&r,&q,delivery,sizeof(delivery),&dn,&ack)){if(dn){memcpy(output+used,delivery,dn);used+=dn;}seed=seed*1103515245u+12345u;if(seed%5!=0){n=packet_encode(&ack,wire,sizeof(wire));if(seed%5==1)wire[2]^=1;if(packet_decode(wire,n,&q))sender_ack(&s,q.seq,now);}}}now+=5;n=sender_timeout(&s,now,re,64);for(size_t i=0;i<n;i++){p=re[i];size_t wn=packet_encode(&p,wire,sizeof(wire));if(packet_decode(wire,wn,&q)&&receiver_packet(&r,&q,delivery,sizeof(delivery),&dn,&ack)){if(dn){memcpy(output+used,delivery,dn);used+=dn;}sender_ack(&s,ack.seq,now);}}TEST_ASSERT_FALSE(s.failed);}TEST_ASSERT_EQUAL_UINT(sizeof(input),used);TEST_ASSERT_EQUAL_MEMORY(input,output,sizeof(input));}
+int main(void){UNITY_BEGIN();RUN_TEST(codec);RUN_TEST(invalid_packets);RUN_TEST(receiver_cases);RUN_TEST(sender_cases);RUN_TEST(timeout_giveup);RUN_TEST(sizes);RUN_TEST(end_to_end);return UNITY_END();}

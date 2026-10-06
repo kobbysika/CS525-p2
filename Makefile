@@ -140,8 +140,13 @@ report:
 	./build/tests/$(APP_NAME)_t
 	mkdir -p ./build/report/html
 	mkdir -p ./build/report/txt
-	gcovr -r . --html --html-details --exclude-directories build/tests/harness --exclude '.*main\.c$$' --exclude '.*test\.c$$' -o ./build/report/html/coverage_report.html
-	gcovr -r . --txt                 --exclude-directories build/tests/harness --exclude '.*main\.c$$' --exclude '.*test\.c$$'
+	@if command -v gcovr >/dev/null; then \
+		gcovr -r . --html --html-details --exclude-directories build/tests/harness --exclude '.*main\.c$$' --exclude '.*test\.c$$' -o ./build/report/html/coverage_report.html; \
+		gcovr -r . --txt --exclude-directories build/tests/harness --exclude '.*main\.c$$' --exclude '.*test\.c$$'; \
+	else \
+		echo "gcovr is not installed; reporting core coverage with gcov"; \
+		gcov -b -c $(BUILD_DIR)/lab.c.o; \
+	fi
 
 
 help:
@@ -161,7 +166,7 @@ help:
 
 
 clean:
-	$(RM) -rf $(BUILD_BASE_DIR) submission-report.md
+	$(RM) -rf $(BUILD_BASE_DIR)
 
 # Print the build configuration and variables for debugging build issues
 print:

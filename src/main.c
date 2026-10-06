@@ -1,21 +1,28 @@
+#define _POSIX_C_SOURCE 200809L
 #include "lab.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <getopt.h>
+#include <netdb.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
-
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
 #ifdef TEST
 #define main main_exclude
 #endif
-
-
-
-int main(void)
-{
-    char *greeting = get_greeting("World");
-    if (greeting) {
-        printf("%s\n", greeting);
-        free(greeting); // Free the allocated memory for the greeting
-    } else {
-        printf("Failed to create greeting.\n");
-    }
-    return 0;
-}
+static void usage(FILE*f){fprintf(f,"Usage: myapp send -s <session> [-w window] [-T timeout-ms] [-l loss]\n                  [-c corrupt] [-d dup] [-p port] <relay> <file>\n       myapp recv -s <session> [-p port] <relay> <file>\n\n  -s <session>     session name shared by the sender and the receiver\n  -w <window>      Go-Back-N window size in packets, 1 to 64 (default: 8)\n  -T <timeout-ms>  retransmission timeout in milliseconds (default: 250)\n  -l <loss>        probability the relay drops a packet (default: 0)\n  -c <corrupt>     probability the relay flips a bit (default: 0)\n  -d <dup>         probability the relay duplicates a packet (default: 0)\n  -p <port>        relay port (default: 4250)\n  <relay>          host name or address of the relay\n  <file>           file to send, or file to write what is received\n");}
+static uint64_t now_ms(void){struct timespec t;if(clock_gettime(CLOCK_MONOTONIC,&t)<0)return 0;return(uint64_t)t.tv_sec*1000u+(uint64_t)t.tv_nsec/1000000u;}
+static int udp_socket(const char*h,const char*port,struct sockaddr_storage*a,socklen_t*alen){struct addrinfo z,*list,*p;int fd=-1,rc;memset(&z,0,sizeof(z));z.ai_family=AF_UNSPEC;z.ai_socktype=SOCK_DGRAM;rc=getaddrinfo(h,port,&z,&list);if(rc){fprintf(stderr,"getaddrinfo: %s\n",gai_strerror(rc));return-1;}for(p=list;p;p=p->ai_next){fd=socket(p->ai_family,p->ai_socktype,p->ai_protocol);if(fd>=0){memcpy(a,p->ai_addr,p->ai_addrlen);*alen=(socklen_t)p->ai_addrlen;break;}}freeaddrinfo(list);if(fd<0)perror("socket");return fd;}
+static int register_relay(int fd,const struct sockaddr*a,socklen_t alen,const char*hello){char r[256];struct pollfd p={fd,POLLIN,0};int tries,n,pr;for(tries=0;tries<5;tries++){if(sendto(fd,hello,strlen(hello),0,a,alen)<0){perror("sendto");return-1;}do pr=poll(&p,1,1000);while(pr<0&&errno==EINTR);if(pr<0){perror("poll");return-1;}if(!pr)continue;n=(int)recvfrom(fd,r,sizeof(r)-1,0,NULL,NULL);if(n<0){perror("recvfrom");return-1;}r[n]='\0';if(!strcmp(r,"OK"))return 0;fprintf(stderr,"relay: %s\n",r);return-1;}fprintf(stderr,"relay did not reply after 5 attempts\n");return-1;}
+static int send_packet(int fd,const struct sockaddr*a,socklen_t alen,const struct packet*p){uint8_t w[GBN_PACKET_MAX];size_t n=packet_encode(p,w,sizeof(w));if(!n||sendto(fd,w,n,0,a,alen)!=(ssize_t)n){perror("sendto");return-1;}return 0;}
+static int run_send(int fd,const struct sockaddr*a,socklen_t alen,const char*path,uint32_t win,uint64_t timeout){int f=open(path,O_RDONLY);struct stat st;uint8_t*d=NULL,w[GBN_PACKET_MAX];struct sender s;struct packet p,re[GBN_WINDOW_MAX],ack;ssize_t got;size_t off=0,n,i;if(f<0){perror(path);return 2;}if(fstat(f,&st)<0||st.st_size<0||st.st_size>16*1024*1024){fprintf(stderr,"invalid file size (maximum 16 MiB)\n");close(f);return 2;}if(st.st_size){d=malloc((size_t)st.st_size);if(!d){close(f);return 2;}while(off<(size_t)st.st_size){got=read(f,d+off,(size_t)st.st_size-off);if(got<=0){perror("read");free(d);close(f);return 2;}off+=(size_t)got;}}close(f);sender_init(&s,d,(size_t)st.st_size,win,timeout);while(!sender_done(&s)&&!s.failed){uint64_t now=now_ms(),due;int wait,pr;struct pollfd q={fd,POLLIN,0};while(sender_next_packet(&s,now,&p))if(send_packet(fd,a,alen,&p)<0){free(d);return 2;}due=sender_deadline(&s);now=now_ms();wait=due<=now?0:(due-now>2147483647u?2147483647:(int)(due-now));pr=poll(&q,1,wait);if(pr<0){if(errno==EINTR)continue;perror("poll");free(d);return 2;}if(pr>0&&(q.revents&POLLIN)){got=recvfrom(fd,w,sizeof(w),0,NULL,NULL);if(got<0){perror("recvfrom");free(d);return 2;}if(packet_decode(w,(size_t)got,&ack)&&ack.type==PACKET_ACK)sender_ack(&s,ack.seq,now_ms());}now=now_ms();n=sender_timeout(&s,now,re,GBN_WINDOW_MAX);for(i=0;i<n;i++)if(send_packet(fd,a,alen,&re[i])<0){free(d);return 2;}}free(d);if(s.failed){fprintf(stderr,"transfer gave up after 10 timeouts with no progress\n");return 2;}return 0;}
+static int run_recv(int fd,const struct sockaddr*a,socklen_t alen,const char*path){FILE*out=fopen(path,"wb");struct receiver r;uint8_t w[GBN_PACKET_MAX],delivery[GBN_PAYLOAD_MAX];struct packet p,ack;size_t delivered;uint64_t last=now_ms(),finish=0;struct pollfd q={fd,POLLIN,0};if(!out){perror(path);return 2;}receiver_init(&r);for(;;){uint64_t now=now_ms(),limit=r.finished?finish+2000:last+30000;int wait,pr;if(now>=limit)break;wait=(int)(limit-now);pr=poll(&q,1,wait);if(pr<0){if(errno==EINTR)continue;perror("poll");fclose(out);return 2;}if(!pr)continue;if(q.revents&POLLIN){ssize_t n=recvfrom(fd,w,sizeof(w),0,NULL,NULL);if(n<0){perror("recvfrom");if(out)fclose(out);return 2;}if(!packet_decode(w,(size_t)n,&p))continue;last=now_ms();if(receiver_packet(&r,&p,delivery,sizeof(delivery),&delivered,&ack)){if(delivered&&fwrite(delivery,1,delivered,out)!=delivered){perror("fwrite");fclose(out);return 2;}if(send_packet(fd,a,alen,&ack)<0){if(out)fclose(out);return 2;}if(r.finished&&!finish){if(fclose(out)){perror("fclose");return 2;}out=NULL;finish=now_ms();}}}}if(out)fclose(out);if(!r.finished){fprintf(stderr,"receiver timed out after 30 seconds\n");return 2;}return 0;}
+static int decimal(const char*s,long lo,long hi,long*v){char*e;errno=0;*v=strtol(s,&e,10);return!errno&&*s&&!*e&&*v>=lo&&*v<=hi;}
+static int probability(const char*s){char*e;double v;errno=0;v=strtod(s,&e);return!errno&&*s&&!*e&&v>=0&&v<=.5;}
+static int session_ok(const char*s){size_t i,n=strlen(s);if(n<1||n>32)return 0;for(i=0;i<n;i++)if(!((s[i]>='a'&&s[i]<='z')||(s[i]>='0'&&s[i]<='9')||s[i]=='-'))return 0;return 1;}
+int main(int argc,char**argv){int sending,opt,fd,rc;const char*session=NULL,*port="4250",*loss="0",*corrupt="0",*dup="0";long win=8,timeout=250,x;struct sockaddr_storage a;socklen_t alen;char hello[160];if(argc==1){usage(stdout);return 0;}if(strcmp(argv[1],"send")&&strcmp(argv[1],"recv")){usage(stderr);return 1;}sending=!strcmp(argv[1],"send");optind=2;opterr=0;while((opt=getopt(argc,argv,sending?"s:w:T:l:c:d:p:":"s:p:"))!=-1)switch(opt){case's':session=optarg;break;case'w':if(!decimal(optarg,1,64,&x))goto bad;win=x;break;case'T':if(!decimal(optarg,1,60000,&x))goto bad;timeout=x;break;case'l':if(!probability(optarg))goto bad;loss=optarg;break;case'c':if(!probability(optarg))goto bad;corrupt=optarg;break;case'd':if(!probability(optarg))goto bad;dup=optarg;break;case'p':if(!decimal(optarg,1,65535,&x))goto bad;port=optarg;break;default:goto bad;}if(!session||!session_ok(session)||argc-optind!=2||!decimal(port,1,65535,&x))goto bad;fd=udp_socket(argv[optind],port,&a,&alen);if(fd<0)return 2;if(sending)snprintf(hello,sizeof(hello),"HELLO %s send %s %s %s",session,loss,corrupt,dup);else snprintf(hello,sizeof(hello),"HELLO %s recv",session);if(register_relay(fd,(struct sockaddr*)&a,alen,hello)<0){close(fd);return 2;}rc=sending?run_send(fd,(struct sockaddr*)&a,alen,argv[optind+1],(uint32_t)win,(uint64_t)timeout):run_recv(fd,(struct sockaddr*)&a,alen,argv[optind+1]);close(fd);return rc;bad:usage(stderr);return 1;}

@@ -1,34 +1,18 @@
 #include "lab.h"
-#include <stdio.h>
-#include <stdlib.h>
-
-char *get_greeting(const char *restrict name)
-{
-  if (name == NULL)
-  {
-    return NULL;
-  }
-
-  // Allocate memory for the greeting message
-  int length = snprintf(NULL, 0, "Hello, %s!", name);
-  if (length < 0) // GCOVR_EXCL_START
-  {
-    return NULL; // snprintf failed
-  } // GCOVR_EXCL_STOP
-
-  //Casting is safe here because we know length is non-negative
-  size_t alloc_size = (size_t) length + 1; // +1 for the null terminator
-  char *greeting = malloc( alloc_size);
-
-
-  if (greeting == NULL) // GCOVR_EXCL_START
-  {
-    return NULL; // Memory allocation failed
-  }  // GCOVR_EXCL_STOP
-
-
-  // Create the greeting message
-  snprintf(greeting, alloc_size, "Hello, %s!", name);
-
-  return greeting;
-}
+#include <string.h>
+static void put16(uint8_t*p,uint16_t v){p[0]=(uint8_t)(v>>8);p[1]=(uint8_t)v;}
+static void put32(uint8_t*p,uint32_t v){p[0]=(uint8_t)(v>>24);p[1]=(uint8_t)(v>>16);p[2]=(uint8_t)(v>>8);p[3]=(uint8_t)v;}
+static uint16_t get16(const uint8_t*p){return (uint16_t)(((uint16_t)p[0]<<8)|p[1]);}
+static uint32_t get32(const uint8_t*p){return ((uint32_t)p[0]<<24)|((uint32_t)p[1]<<16)|((uint32_t)p[2]<<8)|p[3];}
+uint16_t internet_checksum(const uint8_t*d,size_t n){uint32_t s=0;size_t i;for(i=0;i+1<n;i+=2){s+=((uint32_t)d[i]<<8)|d[i+1];s=(s&0xffffu)+(s>>16);}if(i<n)s+=(uint32_t)d[i]<<8;while(s>>16)s=(s&0xffffu)+(s>>16);return (uint16_t)~s;}
+size_t packet_encode(const struct packet*p,uint8_t*w,size_t cap){size_t n;if(!p||!w||p->type>PACKET_FIN||p->length>GBN_PAYLOAD_MAX||((p->type==PACKET_ACK||p->type==PACKET_FIN)&&p->length))return 0;n=GBN_HEADER_SIZE+p->length;if(cap<n)return 0;w[0]=p->type;w[1]=w[2]=w[3]=0;put32(w+4,p->seq);put16(w+8,p->length);if(p->length)memcpy(w+10,p->payload,p->length);put16(w+2,internet_checksum(w,n));return n;}
+bool packet_decode(const uint8_t*w,size_t n,struct packet*p){uint16_t len;if(!w||!p||n<10)return false;len=get16(w+8);if(len>1024||n!=10+len||w[0]>2||w[1]||internet_checksum(w,n)!=0||((w[0]==1||w[0]==2)&&len))return false;p->type=w[0];p->seq=get32(w+4);p->length=len;if(len)memcpy(p->payload,w+10,len);return true;}
+static void make_packet(const struct sender*s,uint32_t seq,struct packet*p){size_t off,rem;memset(p,0,sizeof(*p));p->seq=seq;if(seq==s->data_packets){p->type=PACKET_FIN;return;}p->type=PACKET_DATA;off=(size_t)seq*1024;rem=s->data_size-off;p->length=(uint16_t)(rem>1024?1024:rem);memcpy(p->payload,s->data+off,p->length);}
+void sender_init(struct sender*s,const uint8_t*d,size_t n,uint32_t w,uint64_t t){memset(s,0,sizeof(*s));s->data=d;s->data_size=n;s->data_packets=(uint32_t)((n+1023)/1024);s->window=w;s->timeout_ms=t;}
+bool sender_next_packet(struct sender*s,uint64_t now,struct packet*p){uint32_t total=s->data_packets+1;if(s->failed||s->next>=total||s->next-s->base>=s->window||(s->next==s->data_packets&&s->base!=s->data_packets))return false;make_packet(s,s->next++,p);if(!s->timer_running){s->timer_running=true;s->deadline_ms=now+s->timeout_ms;}return true;}
+void sender_ack(struct sender*s,uint32_t ack,uint64_t now){if(ack>s->base&&ack<=s->next){s->base=ack;s->consecutive_timeouts=0;s->timer_running=s->base!=s->next;if(s->timer_running)s->deadline_ms=now+s->timeout_ms;}}
+size_t sender_timeout(struct sender*s,uint64_t now,struct packet*out,size_t cap){size_t n=0;uint32_t q;if(!s->timer_running||now<s->deadline_ms||s->failed)return 0;if(++s->consecutive_timeouts>=10){s->failed=true;s->timer_running=false;return 0;}for(q=s->base;q<s->next&&n<cap;q++)make_packet(s,q,&out[n++]);s->deadline_ms=now+s->timeout_ms;return n;}
+bool sender_done(const struct sender*s){return !s->failed&&s->base==s->data_packets+1;}
+uint64_t sender_deadline(const struct sender*s){return s->timer_running?s->deadline_ms:UINT64_MAX;}
+void receiver_init(struct receiver*r){r->expected=0;r->finished=false;}
+bool receiver_packet(struct receiver*r,const struct packet*p,uint8_t*out,size_t cap,size_t*n,struct packet*ack){*n=0;if(p->type!=PACKET_DATA&&p->type!=PACKET_FIN)return false;if(!r->finished&&p->seq==r->expected){if(p->type==PACKET_DATA){if(p->length>cap)return false;memcpy(out,p->payload,p->length);*n=p->length;r->expected++;}else{r->expected++;r->finished=true;}}memset(ack,0,sizeof(*ack));ack->type=PACKET_ACK;ack->seq=r->expected;return true;}
