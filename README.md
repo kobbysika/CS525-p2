@@ -17,6 +17,19 @@ The catch was that everything the real world would normally do to them, like an 
 The checksum and packet-validation code needed careful attention too. 
 I had to get network byte order right, handle odd-length payloads, and never trust the length field in an incoming packet. Go-Back-N clicked once I focused on two variables, base and next. An ACK moves base, sending a packet moves next, and a timeout moves neither one. It just retransmits everything still outstanding in the window.
 
+
+## Design
+
+The program has three layers, so the protocol can be tested without a relay, a real clock, a filesystem, or a socket.
+
+The packet layer computes the RFC 1071 checksum and converts packets to and from portable byte buffers. Before anything else sees a packet, it checks the type, reserved field, payload length, datagram size, and checksum.
+
+The state-machine layer holds the Go-Back-N sender and receiver. The sender tracks base, next, the window, and the retransmission timer, and the receiver tracks the next expected sequence number. Each one takes an event (an ACK, an incoming packet, a timeout) and returns the actions to perform. Since they never touch sockets, files, or the clock, the tests can use a fake clock and an in-memory unreliable channel.
+
+The I/O layer does everything else: command-line parsing, relay registration, UDP sockets, poll, the monotonic clock, and file handling. It feeds external events to the state machines and carries out whatever they return.
+
+
+
 ## Results
 
 These measurements used a 1 MiB file, the default 250 ms retransmission
