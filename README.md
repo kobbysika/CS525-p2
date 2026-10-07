@@ -46,9 +46,9 @@ verified against the input with `cmp`.
 
 ## Analysis
 
-The clean window-1 mean was 103.191 seconds. The transmition of 1,024
-DATA packets and one FIN, waiting one round trip for each, so its observed
-round-trip time was `(103.191 / 1025) × 1000 = 100.674 ms`. The relay accounts
+The clean window-1 mean was 103.191 seconds. The sender transmitted 1,024 DATA
+packets and one FIN, waiting one round trip for each. Its observed round-trip
+time was `(103.191 / 1025) × 1000 = 100.674 ms`. The relay accounts
 for 100 ms. The remaining 0.674 ms per round trip comes from process
 scheduling, relay and protocol processing, socket operations, packet
 serialization, and timer or measurement granularity in the Codespaces virtual
