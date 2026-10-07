@@ -54,3 +54,17 @@ dkms.conf
 /myprogram
 /build
 /.vscode/c_cpp_properties.json
+
+
+# Task 6 benchmark artifacts
+benchmark/
+1mib.bin
+benchmark-out.bin
+damaged-output.bin
+empty-output.bin
+empty.bin
+in.bin
+out.bin
+receiver-input.bin
+receiver-output.bin
+trial.time
